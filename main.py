@@ -7,7 +7,8 @@ import redis
 import secrets
 import os
 
-load_dotenv(dotenv_path=Path(r"C:\Users\vaibh\url-shortner\.env"))
+# load_dotenv(dotenv_path=Path(r"C:\Users\vaibh\url-shortner\.env"))
+load_dotenv()
 
 app = FastAPI()
 
