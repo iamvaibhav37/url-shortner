@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 import psycopg2
+from psycopg2 import pool
 import redis
 import secrets
 import os
@@ -11,28 +12,41 @@ load_dotenv()
 app = FastAPI()
 
 # Redis connection (single persistent connection is fine for Redis)
-cache = redis.from_url(os.getenv("REDIS_URL"))
+redis_url = os.getenv("REDIS_URL")
+cache = redis.from_url(redis_url) if redis_url else None
+# cache = redis.from_url(os.getenv("REDIS_URL"))
+
+# Create pool once at startup (not per request)
+connection_pool = pool.SimpleConnectionPool(
+    minconn=1,
+    maxconn=10,
+    dsn=os.getenv("DATABASE_URL")
+)
 
 def get_db():
-    """Create a fresh database connection for each request"""
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+    return connection_pool.getconn()
+
+def release_db(conn):
+    connection_pool.putconn(conn)
 
 def init_db():
     """Create table on startup"""
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS urls (
             id          SERIAL PRIMARY KEY,
             short_code  VARCHAR(20) UNIQUE NOT NULL,
             long_url    TEXT NOT NULL,
             clicks      INTEGER DEFAULT 0,
             created_at  TIMESTAMP DEFAULT now()
-        )
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
+            )
+        """)
+        conn.commit()
+        cursor.close()
+    finally:
+        release_db(conn)
 
 init_db()
 
@@ -65,13 +79,13 @@ def shorten_url(long_url: str, request: Request):
             (short_code, long_url)
         )
         conn.commit()
-    finally:
         cursor.close()
-        conn.close()
-
-    cache.setex(short_code, 86400, long_url)
-
-    return {"short_code": short_code, "long_url": long_url}
+        return {"short_url": short_code}
+    except Exception as e:
+        conn.rollback()   # important!
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        release_db(conn)  # always returned to pool
 
 @app.get("/stats/{short_code}")
 def get_stats(short_code: str):
@@ -85,7 +99,7 @@ def get_stats(short_code: str):
         row = cursor.fetchone()
     finally:
         cursor.close()
-        conn.close()
+        release_db(conn)
 
     if not row:
         raise HTTPException(status_code=404, detail="Short URL not found")
@@ -114,7 +128,7 @@ def redirect_url(short_code: str):
             row = cursor.fetchone()
         finally:
             cursor.close()
-            conn.close()
+            release_db(conn)
 
         if not row:
             raise HTTPException(status_code=404, detail="Short URL not found")
@@ -132,6 +146,6 @@ def redirect_url(short_code: str):
         conn.commit()
     finally:
         cursor.close()
-        conn.close()
+        release_db(conn)
 
     return RedirectResponse(url=long_url)
