@@ -1,9 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from dotenv import load_dotenv
-import psycopg2
 from psycopg2 import pool
 import redis
 import secrets
@@ -12,18 +10,19 @@ import os
 load_dotenv()
 
 app = FastAPI()
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/app")
 def frontend():
     return FileResponse("static/index.html")
 
-# Redis connection (single persistent connection is fine for Redis)
-redis_url = os.getenv("REDIS_URL")
-cache = redis.from_url(redis_url) if redis_url else None
-# cache = redis.from_url(os.getenv("REDIS_URL"))
+# Redis — single persistent connection is fine
+cache = redis.from_url(os.getenv("REDIS_URL"))
 
-# Create pool once at startup (not per request)
+# Connection pool — created once at startup, reused across all requests
+# minconn=1: always keep 1 connection alive
+# maxconn=10: never open more than 10 simultaneous connections
 connection_pool = pool.SimpleConnectionPool(
     minconn=1,
     maxconn=10,
@@ -31,29 +30,30 @@ connection_pool = pool.SimpleConnectionPool(
 )
 
 def get_db():
+    """Borrow a connection from the pool"""
     return connection_pool.getconn()
 
 def release_db(conn):
+    """Return the connection back to the pool (not closed, reused)"""
     connection_pool.putconn(conn)
 
 def init_db():
-    """Create table on startup"""
     conn = get_db()
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS urls (
-            id          SERIAL PRIMARY KEY,
-            short_code  VARCHAR(20) UNIQUE NOT NULL,
-            long_url    TEXT NOT NULL,
-            clicks      INTEGER DEFAULT 0,
-            created_at  TIMESTAMP DEFAULT now()
+            CREATE TABLE IF NOT EXISTS urls (
+                id          SERIAL PRIMARY KEY,
+                short_code  VARCHAR(20) UNIQUE NOT NULL,
+                long_url    TEXT NOT NULL,
+                clicks      INTEGER DEFAULT 0,
+                created_at  TIMESTAMP DEFAULT now()
             )
         """)
         conn.commit()
-        cursor.close()
     finally:
-        release_db(conn)
+        cursor.close()
+        release_db(conn)  # return to pool, not closed
 
 init_db()
 
@@ -63,10 +63,7 @@ def check_rate_limit(ip: str):
     if count == 1:
         cache.expire(key, 60)
     if count > 5:
-        raise HTTPException(
-            status_code=429,
-            detail="Too many requests. Max 5 per minute."
-        )
+        raise HTTPException(status_code=429, detail="Too many requests. Max 5 per minute.")
 
 @app.get("/")
 def home():
@@ -75,9 +72,7 @@ def home():
 @app.post("/shorten")
 def shorten_url(long_url: str, request: Request):
     check_rate_limit(request.client.host)
-
     short_code = secrets.token_urlsafe(6)
-
     conn = get_db()
     cursor = conn.cursor()
     try:
@@ -86,13 +81,14 @@ def shorten_url(long_url: str, request: Request):
             (short_code, long_url)
         )
         conn.commit()
-        cursor.close()
-        return {"short_url": short_code}
-    except Exception as e:
-        conn.rollback()   # important!
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        conn.rollback()  # undo failed transaction
+        raise HTTPException(status_code=500, detail="Database error")
     finally:
-        release_db(conn)  # always returned to pool
+        cursor.close()
+        release_db(conn)  # back to pool
+    cache.setex(short_code, 86400, long_url)
+    return {"short_code": short_code, "long_url": long_url}
 
 @app.get("/stats/{short_code}")
 def get_stats(short_code: str):
@@ -107,21 +103,18 @@ def get_stats(short_code: str):
     finally:
         cursor.close()
         release_db(conn)
-
     if not row:
         raise HTTPException(status_code=404, detail="Short URL not found")
-
     return {
         "short_code": short_code,
         "long_url":   row[0],
         "clicks":     row[1],
-        "created_at": row[2],
+        "created_at": row[2]
     }
 
 @app.get("/{short_code}")
 def redirect_url(short_code: str):
     long_url = cache.get(short_code)
-
     if long_url:
         long_url = long_url.decode()
     else:
@@ -136,13 +129,12 @@ def redirect_url(short_code: str):
         finally:
             cursor.close()
             release_db(conn)
-
         if not row:
             raise HTTPException(status_code=404, detail="Short URL not found")
-
         long_url = row[0]
         cache.setex(short_code, 86400, long_url)
 
+    # Update click count
     conn = get_db()
     cursor = conn.cursor()
     try:
@@ -151,6 +143,8 @@ def redirect_url(short_code: str):
             (short_code,)
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
     finally:
         cursor.close()
         release_db(conn)
