@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>URL Shortener</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f3; color: #1a1a1a; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+    .wrap { width: 100%; max-width: 520px; }
+    .logo { font-size: 22px; font-weight: 500; margin-bottom: 6px; }
+    .sub { font-size: 14px; color: #666; margin-bottom: 1.5rem; }
+    .card { background: white; border: 0.5px solid #e0e0e0; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+    .label { font-size: 13px; color: #666; margin-bottom: 8px; }
+    .row { display: flex; gap: 8px; }
+    .row input { flex: 1; height: 40px; padding: 0 12px; border: 0.5px solid #ccc; border-radius: 8px; font-size: 14px; outline: none; background: #fafafa; }
+    .row input:focus { border-color: #888; }
+    .btn { height: 40px; padding: 0 16px; border-radius: 8px; border: 0.5px solid #ccc; background: transparent; font-size: 14px; cursor: pointer; }
+    .btn:hover { background: #f0f0f0; }
+    .btn-primary { background: #1a1a1a; color: white; border-color: transparent; }
+    .btn-primary:hover { opacity: 0.85; background: #1a1a1a; }
+    .divider { height: 0.5px; background: #eee; margin: 1.25rem 0; }
+    .result { display: none; }
+    .result.show { display: block; }
+    .result-label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .result-url { font-size: 17px; font-weight: 500; margin-bottom: 12px; word-break: break-all; }
+    .result-url a { color: #185FA5; text-decoration: none; }
+    .actions { display: flex; gap: 8px; }
+    .stats-card { display: none; }
+    .stats-card.show { display: block; }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .stat-box { background: #f5f5f3; border-radius: 8px; padding: 12px 14px; }
+    .stat-num { font-size: 24px; font-weight: 500; }
+    .stat-lbl { font-size: 12px; color: #888; margin-top: 2px; }
+    .error { font-size: 13px; color: #A32D2D; margin-top: 8px; display: none; }
+    .error.show { display: block; }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #1a1a1a; color: white; padding: 8px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+    .spinner { display: none; width: 16px; height: 16px; border: 2px solid #ccc; border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
+    .spinner.show { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">🔗 snip</div>
+  <p class="sub">Paste a long URL, get a short one instantly.</p>
+
+  <div class="card">
+    <p class="label">Long URL</p>
+    <div class="row">
+      <input type="url" id="longUrl" placeholder="https://example.com/very/long/url" />
+      <button class="btn btn-primary" onclick="shorten()">
+        <span id="btnText">Shorten</span>
+        <span class="spinner" id="spinner"></span>
+      </button>
+    </div>
+    <p class="error" id="error"></p>
+
+    <div class="result" id="result">
+      <div class="divider"></div>
+      <p class="result-label">Your short link</p>
+      <div class="result-url"><a id="shortLink" href="#" target="_blank"></a></div>
+      <div class="actions">
+        <button class="btn" onclick="copyLink()">Copy link</button>
+        <button class="btn" onclick="loadStats()">View stats</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card stats-card" id="statsCard">
+    <p class="label">Stats for <strong id="statsCode"></strong></p>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-num" id="statClicks">—</div>
+        <div class="stat-lbl">total clicks</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num" id="statCreated">—</div>
+        <div class="stat-lbl">created</div>
+      </div>
+    </div>
+    <p style="font-size:13px; color:#888; margin-top:12px; word-break:break-all;" id="statUrl"></p>
+  </div>
+</div>
+
+<div class="toast" id="toast">Copied!</div>
+
+<script>
+  const BASE = "https://web-production-96169.up.railway.app";
+  let currentCode = "";
+
+  async function shorten() {
+    const url = document.getElementById("longUrl").value.trim();
+    showError("");
+    document.getElementById("result").classList.remove("show");
+    document.getElementById("statsCard").classList.remove("show");
+
+    if (!url) { showError("Please paste a URL first."); return; }
+    if (!url.startsWith("http")) { showError("URL must start with http:// or https://"); return; }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${BASE}/shorten?long_url=${encodeURIComponent(url)}`, { method: "POST" });
+      const data = await res.json();
+      if (res.status === 429) { showError("Too many requests — wait a minute and try again."); return; }
+      if (!res.ok) { showError("Something went wrong. Try again."); return; }
+      currentCode = data.short_code;
+      const shortUrl = `${BASE}/${currentCode}`;
+      const link = document.getElementById("shortLink");
+      link.href = shortUrl;
+      link.textContent = shortUrl;
+      document.getElementById("result").classList.add("show");
+    } catch(e) {
+      showError("Could not reach the server.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadStats() {
+    if (!currentCode) return;
+    const card = document.getElementById("statsCard");
+    card.classList.add("show");
+    document.getElementById("statsCode").textContent = currentCode;
+    document.getElementById("statClicks").textContent = "…";
+    document.getElementById("statCreated").textContent = "…";
+    try {
+      const res = await fetch(`${BASE}/stats/${currentCode}`);
+      const data = await res.json();
+      document.getElementById("statClicks").textContent = data.clicks ?? 0;
+      const d = new Date(data.created_at);
+      document.getElementById("statCreated").textContent = d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+      document.getElementById("statUrl").textContent = data.long_url;
+    } catch(e) {
+      document.getElementById("statClicks").textContent = "—";
+    }
+  }
+
+  function copyLink() {
+    navigator.clipboard.writeText(document.getElementById("shortLink").href).then(() => {
+      const t = document.getElementById("toast");
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 1800);
+    });
+  }
+
+  function showError(msg) {
+    const el = document.getElementById("error");
+    el.textContent = msg;
+    msg ? el.classList.add("show") : el.classList.remove("show");
+  }
+
+  function setLoading(on) {
+    document.getElementById("spinner").classList.toggle("show", on);
+    document.getElementById("btnText").style.display = on ? "none" : "inline";
+  }
+
+  document.getElementById("longUrl").addEventListener("keydown", e => {
+    if (e.key === "Enter") shorten();
+  });
+</script>
+</body>
+</html>

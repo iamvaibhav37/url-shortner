@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2 import pool
@@ -10,6 +12,11 @@ import os
 load_dotenv()
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/app")
+def frontend():
+    return FileResponse("static/index.html")
 
 # Redis connection (single persistent connection is fine for Redis)
 redis_url = os.getenv("REDIS_URL")
