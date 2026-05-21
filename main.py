@@ -67,7 +67,7 @@ def check_rate_limit(ip: str):
 
 @app.get("/")
 def home():
-    return {"message": "URL shortener is alive"}
+    return FileResponse("static/index.html")
 
 @app.post("/shorten")
 def shorten_url(long_url: str, request: Request):
