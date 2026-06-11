@@ -69,6 +69,10 @@ def check_rate_limit(ip: str):
 def home():
     return FileResponse("static/index.html")
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 @app.post("/shorten")
 def shorten_url(long_url: str, request: Request):
     check_rate_limit(request.client.host)
