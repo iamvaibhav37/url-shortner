@@ -70,6 +70,7 @@ def home():
     return FileResponse("static/index.html")
 
 @app.get("/health")
+@app.head("/health")
 def health_check():
     return {"status": "ok"}
 
