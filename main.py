@@ -6,10 +6,18 @@ from psycopg2 import pool
 import redis
 import secrets
 import os
+import time
 
 load_dotenv()
 
 app = FastAPI()
+
+@app.middleware("http")
+async def add_process_time(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - start) * 1000:.2f}"
+    return response
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

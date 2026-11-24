@@ -11,3 +11,7 @@ wheels/
 
 .env
 
+loadtest/codes.txt
+loadtest/summary.csv
+loadtest/results_*
+loadtest/.redis_snap.json 
